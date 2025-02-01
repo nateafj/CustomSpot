@@ -1,3 +1,4 @@
+import os
 import json
 import urllib.parse, requests
 from datetime import datetime
@@ -7,25 +8,23 @@ app = Flask(__name__)
 
 app.secret_key = '3glob4-4w4f5h-5gets-h6ht6'
 
-CLIENT_ID = 'ca34854ede8d4a358fc45b72ffcc540e'
-CLIENT_SECRET = 'd1a16bab4907414988bdc10293945883'
+CLIENT_ID = os.getenv('CID')
+CLIENT_SECRET = os.getenv('CSEC')
 REDIRECT_URI = 'http://localhost:5000/callback'
 
 AUTH_URL = 'https://accounts.spotify.com/authorize'
 TOKEN_URL = 'https://accounts.spotify.com/api/token'
 API_BASE_URL = 'https://api.spotify.com/v1/'
 
-# initialize a list to capture the playlist uri's
+# INITIALIZE GLOBAL ARRAYS
 playlist_uris = []
-
 playlist_names_and_tracktotals = []
-# initialize a list to capture the track uri's
 track_uris = []
-
 duplicate_track_uris = []
 playlist_objects = []
 saved_tracks = []
 not_in_saved = []
+detected_playlists = []
 
 
 @app.route('/')
@@ -78,18 +77,19 @@ def callback():
 def get_playlists():
     if 'access_token' not in session:
         return redirect('/login')
-
     if datetime.now().timestamp() > session['expires_at']:
         return redirect('/refresh-token')
     offset = 0
     limit = 50
+    print('yo!')
     headers = {
         'Authorization': f"Bearer {session['access_token']}",
     }
-
     response = requests.get(API_BASE_URL + 'me/playlists', headers=headers)
+    print(response.headers)
     playlists = response.json()
     print(playlists.keys())
+    print(playlists)
     # initialize an enhanced loop to comb through the playlist uri's we shouldn't need any duplicate verification
     # because playlists should never have the same id but refreshing causes duplicates to enter the array
     playlist_return_limit = 50
@@ -97,37 +97,40 @@ def get_playlists():
     print(playlists['total'])
     # PLAYLISTS TOTAL OVER RETURN LIMIT START
     for item in playlists['items']:
+        print(item)
+        if str(item) == 'None':
+            continue
         current_playlist_object = {}
         # checking the type of uri to ensure we don't grab user uri's
-        if item['owner']['display_name'] != 'n8':
+        if item['owner']['display_name'] != 'n8' and item['description'] != 'Curated with AI':
             print('____________________________')
-            print("playlist not owned by _name_")
+            print("playlist not owned by _name_ or made by AI")
             print(item['owner']['display_name'])
-            print('____________________________')
             continue
         current_playlist_object["name"] = item['name']
         current_playlist_object["uri"] = item['uri'].split(':')[-1]
         current_playlist_object["total"] = item['tracks']['total']
-        print('____________________________')
+        current_playlist_object['snapshot_id'] = item['snapshot_id']
+        current_playlist_object['songs'] = []
         print(current_playlist_object)
         playlist_uri = item['uri'].split(':')[-1]
         if playlist_uri in playlist_uris:
             continue
-        # to prevent the duplicates ids from being added from refreshing
+        # To prevent the duplicates ids from being added from refreshing
         playlist_objects.append(current_playlist_object)
         playlist_uris.append(playlist_uri)
         playlist_counter += 1
         print('playlists added:' + str(playlist_counter))
-        print('____________________________')
     while len(playlists['items']) > 0:
         offset += limit
         response = requests.get(API_BASE_URL + 'me/playlists' + f'?offset={offset}', headers=headers)
         playlists = response.json()
         for item in playlists['items']:
+            if str(item) == 'None':
+                continue
             current_playlist_object = {}
             # checking the type of uri to ensure we don't grab user uri's
-            if item['owner']['display_name'] != 'n8':
-                print('____________________________')
+            if item['owner']['display_name'] != 'n8' and item['description'] != 'Curated with AI':
                 print("playlist not owned by _name_")
                 print(item['owner']['display_name'])
                 print('____________________________')
@@ -135,7 +138,7 @@ def get_playlists():
             current_playlist_object["name"] = item['name']
             current_playlist_object["uri"] = item['uri'].split(':')[-1]
             current_playlist_object["total"] = item['tracks']['total']
-            print('____________________________')
+            current_playlist_object['songs'] = []
             print(current_playlist_object)
             playlist_uri = item['uri'].split(':')[-1]
             if playlist_uri in playlist_uris:
@@ -175,7 +178,6 @@ def refresh_token():
 @app.route('/tracks')
 def get_track():
     limit = 100
-    offset = 0
     track_counter = 0
     duplicate_counter = 0
     headers = {
@@ -190,6 +192,7 @@ def get_track():
         print('there are: ' + str(tracks['total']) + ' songs in the playlist ')
         for item in tracks['items']:
             if item['track']['type'] == 'track':
+                print(item['track']['name'])
                 track_uri = item['track']['uri'].split(':')[-1]
                 if track_uri in track_uris:
                     duplicate_track_uris.append(track_uri)
@@ -372,6 +375,82 @@ def info_dump():
 
         return tracklist
     return "ello govna!"
+
+
+@app.route('/playlist_builder')
+def build_playlist():
+    limit = 100
+    headers = {
+        'Authorization': f"Bearer {session['access_token']}"
+    }
+    for playlist in playlist_objects:
+        track_counter = 0
+        offset = 0
+        response = requests.get(API_BASE_URL + 'playlists/' + playlist['uri'] + '/tracks' + "?offset=0",
+                                headers=headers)
+        playlist_tracks = response.json()
+        print(playlist['name'])
+        for item in playlist_tracks['items']:
+            dupe = 0
+            track_object = {}
+            if item['track']['type'] == 'track':
+                print(item['track']['name'])
+                track_object['name'] = item['track']['name']
+                track_object['uri'] = item['track']['uri'].split(':')[-1]
+                for song in playlist.get('songs', []):
+                    if track_object['uri'] == song['uri']:
+                        dupe = 1
+                if dupe == 1:
+                    continue
+                playlist['songs'].append(track_object)
+                track_counter += 1
+        while len(playlist_tracks['items']) > 0:
+            offset += limit
+            response = requests.get(
+                API_BASE_URL + 'playlists/' + playlist['uri'] + '/tracks' + f"?offset={str(offset)}",
+                headers=headers)
+            playlist_tracks = response.json()
+            for paginated_page_track in playlist_tracks['items']:
+                dupe = 0
+                track_object = {}
+                if paginated_page_track['track']['type'] == 'track':
+                    print(paginated_page_track['track']['name'])
+                    track_object['name'] = paginated_page_track['track']['name']
+                    track_object['uri'] = paginated_page_track['track']['uri'].split(':')[-1]
+                    for song in playlist.get('songs', []):
+                        if track_object['uri'] == song['uri']:
+                            dupe = 1
+                    if dupe == 1:
+                        continue
+                    playlist['songs'].append(track_object)
+                    track_counter += 1
+        print('total songs actually added ' + str(track_counter))
+    return playlist_objects
+
+
+@app.route('/find_ps_song')
+def find_ps_song():
+    target_track_uri = input('what song would you like to remove?')
+    print(target_track_uri)
+    for playlist in playlist_objects:
+        current_playlist = {}
+        for song in playlist.get('songs', []):
+            if target_track_uri == song['uri']:
+                current_playlist['name'] = playlist['name']
+                current_playlist['uri'] = playlist['uri']
+                current_playlist['snapshot_id'] = playlist['snapshot_id']
+                detected_playlists.append(current_playlist)
+                print('here!')
+    return detected_playlists
+
+# @app.route('/remove_songs')
+# def remove_songs():
+#     headers = {
+#
+#     }
+#     for playlist in detected_playlists:
+#
+#
 
 
 if __name__ == '__main__':
